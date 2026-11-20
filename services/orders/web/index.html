@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orderflow dashboard</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --muted:#666; --line:#ddd; --card:#f7f7f8; --accent:#2f6fed; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151517; --fg:#ececec; --muted:#9a9a9a; --line:#333; --card:#1e1e21; --accent:#6c9bff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  section { background: var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:20px; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+  label { display:flex; flex-direction:column; font-size:12px; color:var(--muted); gap:4px; }
+  input, select { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  input[type=number] { width: 110px; }
+  button { font:inherit; padding:8px 14px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .presets { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:13px; color:var(--muted); }
+  .wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  .badge { padding:2px 9px; border-radius:999px; font-size:12px; font-weight:600; }
+  .PENDING { background:#fff3cd; color:#7a5b00; }
+  .CONFIRMED { background:#d4f4dd; color:#14692e; }
+  .CANCELLED { background:#fbd9d9; color:#8a1c1c; }
+  .msg { font-size:13px; color:var(--muted); margin-top:10px; min-height:1.4em; }
+  code { font-family: ui-monospace, monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>orderflow</h1>
+  <p class="sub">Place orders and watch the saga settle: PENDING → CONFIRMED or CANCELLED.</p>
+
+  <section>
+    <h2>New order</h2>
+    <div class="row">
+      <label>Customer <input id="customer" value="customer-1"></label>
+      <label>SKU
+        <select id="sku">
+          <option value="sku-1">sku-1 (stock 100)</option>
+          <option value="sku-2">sku-2 (stock 100)</option>
+          <option value="sku-3">sku-3 (stock 5)</option>
+        </select>
+      </label>
+      <label>Quantity <input id="qty" type="number" min="1" value="1"></label>
+      <label>Unit price (cents) <input id="price" type="number" min="0" value="1500"></label>
+      <button class="primary" id="place">Place order</button>
+    </div>
+    <div class="presets">
+      Try:
+      <button data-p="ok">Happy path</button>
+      <button data-p="stock">Out of stock</button>
+      <button data-p="decline">Payment declined</button>
+    </div>
+    <div class="msg" id="msg"></div>
+  </section>
+
+  <section>
+    <h2>Recent orders</h2>
+    <div class="wrap">
+      <table>
+        <thead><tr><th>Order</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const presets = {
+  ok:      { sku:'sku-1', qty:2,  price:1500 },
+  stock:   { sku:'sku-3', qty:50, price:100 },
+  decline: { sku:'sku-1', qty:1,  price:200000 },
+};
+
+function say(text) { $('msg').textContent = text; }
+
+async function place() {
+  const body = {
+    customer_id: $('customer').value.trim(),
+    items: [{ sku: $('sku').value, quantity: +$('qty').value, unit_price_cents: +$('price').value }],
+  };
+  try {
+    const res = await fetch('/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    say(res.ok ? 'Created order ' + data.id : 'Error: ' + (data.error || res.status));
+    refresh();
+  } catch (e) { say('Request failed: ' + e.message); }
+}
+
+function cell(tr, text, cls) {
+  const td = document.createElement('td');
+  if (cls) { const s = document.createElement('span'); s.className = 'badge ' + cls; s.textContent = text; td.appendChild(s); }
+  else td.textContent = text;
+  tr.appendChild(td);
+}
+
+async function refresh() {
+  try {
+    const orders = await (await fetch('/orders')).json();
+    const rows = $('rows');
+    rows.replaceChildren();
+    for (const o of orders) {
+      const tr = document.createElement('tr');
+      cell(tr, o.id.slice(0, 8));
+      cell(tr, o.customer_id);
+      cell(tr, o.items.map(i => i.quantity + '× ' + i.sku).join(', '));
+      cell(tr, '$' + (o.total_cents / 100).toFixed(2));
+      cell(tr, o.status, o.status);
+      cell(tr, new Date(o.created_at).toLocaleTimeString());
+      rows.appendChild(tr);
+    }
+  } catch (e) { /* transient; next poll will retry */ }
+}
+
+$('place').addEventListener('click', place);
+document.querySelectorAll('[data-p]').forEach(b => b.addEventListener('click', () => {
+  const p = presets[b.dataset.p];
+  $('sku').value = p.sku; $('qty').value = p.qty; $('price').value = p.price;
+  place();
+}));
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>
